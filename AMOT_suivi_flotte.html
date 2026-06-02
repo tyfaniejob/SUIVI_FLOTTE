@@ -6,6 +6,7 @@
 <title>AMOT Ferroviaire - Suivi flotte</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f4f2;color:#1a1a1a;font-size:14px}
@@ -123,6 +124,8 @@ tfoot td{padding:8px 11px;font-weight:700;background:#f8f8f6;border-top:2px soli
   </div>
   <div class="hdr-right flex" style="gap:8px">
     <input id="file-input" type="file" accept=".xlsx,.xls" multiple style="display:none" onchange="handleFiles(this.files)"/>
+    <input id="ev-import-input" type="file" accept=".xlsx,.xls,.csv,.pdf" style="display:none" onchange="handleEVImportFile(this.files)"/>
+    <input id="backup-file-input" type="file" accept=".json" style="display:none" onchange="handleBackupFile(this.files)"/>
     <button class="btn primary admin-only" id="import-btn" style="display:none" onclick="clickImport()">&#128194; Importer Excel</button>
     <span id="hdr-user" style="font-size:12px;color:#888;font-weight:500;padding:0 6px"></span>
     <button class="btn" id="logout-btn" onclick="doLogout()" style="font-size:12px">&#128274; Deconnexion</button>
@@ -1448,7 +1451,13 @@ function renderKm(){
     html+='<div class="card" style="margin-top:14px">';
     html+='<div class="flex-between" style="margin-bottom:12px">';
     html+='<h3 style="margin:0">&#x26A1; Recharges véhicules électriques</h3>';
-    if(IS_ADMIN()) html+='<button class="btn primary sm" onclick="openNewEV()">+ Recharge</button>';
+    html+='<div class="flex" style="gap:6px">';
+    if(IS_ADMIN()){
+      html+='<button class="btn sm" onclick="downloadEVTemplate()" title="Télécharger le modèle Excel">&#128229; Modèle XLS</button>';
+      html+='<button class="btn sm" onclick="clickImportEV()">&#128196; Importer XLS/PDF</button>';
+      html+='<button class="btn primary sm" onclick="openNewEV()">+ Recharge</button>';
+    }
+    html+='</div>';
     html+='</div>';
     // Summary per EV
     var evCharges=STATE.evCharges||[];
@@ -2194,6 +2203,25 @@ function renderConfig(){
   html+='</div>';
   html+='</div>';
 
+  html+='<div class="card" style="border-left:4px solid var(--g)">';
+  html+='<div class="flex-between" style="margin-bottom:12px"><h3 style="margin:0">&#128190; Sauvegarde des données</h3></div>';
+  html+='<div style="font-size:13px;color:#555;margin-bottom:14px;background:var(--gb);border-radius:8px;padding:10px 13px">';
+  html+='La sauvegarde contient <strong>toutes les données</strong> : transactions, alertes, contraventions, relevés kilométriques, recharges VE, configuration. ';
+  html+='Utilisez-la avant toute modification de la version HTML pour ne pas perdre vos données.</div>';
+  html+='<div class="flex" style="gap:10px;flex-wrap:wrap">';
+  html+='<div style="flex:1;min-width:220px;border:1px solid var(--bdr);border-radius:10px;padding:14px">';
+  html+='<div style="font-weight:700;margin-bottom:6px">&#128229; Exporter une sauvegarde</div>';
+  html+='<div style="font-size:12px;color:#888;margin-bottom:10px">Télécharge un fichier <code>.json</code> avec toutes les données actuelles.</div>';
+  html+='<button class="btn primary" onclick="exportBackup()">&#128229; Exporter (.json)</button></div>';
+  html+='<div style="flex:1;min-width:220px;border:1px solid var(--bdr);border-radius:10px;padding:14px">';
+  html+='<div style="font-weight:700;margin-bottom:6px">&#128228; Restaurer une sauvegarde</div>';
+  html+='<div style="font-size:12px;color:#888;margin-bottom:10px">Importe un fichier de sauvegarde <code>.json</code> et remplace les données actuelles.</div>';
+  html+='<button class="btn" onclick="clickImportBackup()">&#128228; Importer sauvegarde</button></div>';
+  html+='</div>';
+  var lastExport=LS.get('afLastBackup');
+  if(lastExport) html+='<div style="font-size:11px;color:#aaa;margin-top:10px">Dernière export : '+new Date(lastExport).toLocaleDateString("fr-FR",{day:"2-digit",month:"long",year:"numeric",hour:"2-digit",minute:"2-digit"})+'</div>';
+  html+='</div>';
+
   html+='<div class="card" style="border-color:#c0392b22"><h3 style="color:var(--red)">Reinitialisation</h3><div class="flex"><button class="btn danger" onclick="confirmClear()">Effacer transactions</button><button class="btn danger" onclick="confirmReset()">Reinitialisation totale</button></div></div>';
   el.innerHTML=html;
 }
@@ -2537,6 +2565,281 @@ function delEV(id){
   renderKm();
 }
 
+// ── SAUVEGARDE EXPORT / IMPORT ───────────────────────────────────────────────
+function exportBackup(){
+  if(!IS_ADMIN()) return;
+  var data={version:2,appName:'AMOT Suivi Flotte',exportDate:new Date().toISOString(),
+    cfg:STATE.cfg,txns:STATE.txns,alerts:STATE.alerts,pv:STATE.pv,km:STATE.km||[],evCharges:STATE.evCharges||[]};
+  var blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url; a.download='AMOT_backup_'+new Date().toISOString().slice(0,10)+'.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  LS.set('afLastBackup',new Date().toISOString());
+  var bar=document.getElementById('import-bar');
+  document.getElementById('import-log').textContent='✅ Sauvegarde exportée — conservez ce fichier précieusement !';
+  bar.classList.add('show'); setTimeout(function(){bar.classList.remove('show');},5000);
+  renderConfig();
+}
+
+function clickImportBackup(){ document.getElementById('backup-file-input').click(); }
+
+function handleBackupFile(files){
+  var file=files[0]; if(!file) return;
+  document.getElementById('backup-file-input').value='';
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var data=JSON.parse(e.target.result);
+      if(!data.cfg||!data.txns){alert('Format de sauvegarde invalide (champs manquants).');return;}
+      var expDate=data.exportDate?new Date(data.exportDate).toLocaleDateString('fr-FR',{day:'2-digit',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'}):'date inconnue';
+      document.getElementById('backup-info').innerHTML=
+        '<div style="font-size:13px;line-height:1.7">'+
+        '<strong>📅 Exportée le '+expDate+'</strong><br>'+
+        '🚗 <strong>'+(data.cfg.vehicles?data.cfg.vehicles.length:0)+'</strong> véhicules<br>'+
+        '📋 <strong>'+(data.txns?data.txns.length:0)+'</strong> transactions carburant/péage<br>'+
+        '⚡ <strong>'+(data.evCharges?data.evCharges.length:0)+'</strong> recharges VE<br>'+
+        '🚨 <strong>'+(data.pv?data.pv.length:0)+'</strong> contraventions<br>'+
+        '📍 <strong>'+(data.km?data.km.length:0)+'</strong> relevés kilométriques'+
+        '</div>';
+      window._pendingBackup=data;
+      openModal('modal-backup-restore');
+    }catch(err){alert('Erreur de lecture du fichier : '+err.message);}
+  };
+  reader.readAsText(file);
+}
+
+function confirmRestoreBackup(){
+  var data=window._pendingBackup; if(!data) return;
+  STATE.cfg=data.cfg;
+  STATE.txns=data.txns||[];
+  STATE.alerts=data.alerts||[];
+  STATE.pv=data.pv||[];
+  STATE.km=data.km||[];
+  STATE.evCharges=data.evCharges||[];
+  // Garantir les champs manquants de cfg
+  if(!STATE.cfg.absences) STATE.cfg.absences=[];
+  if(!STATE.cfg.alertSettings) STATE.cfg.alertSettings={rapprocheeH:12};
+  if(!STATE.cfg.vehicleAssignments) STATE.cfg.vehicleAssignments=[];
+  saveState();
+  updateBadges();
+  closeModal('modal-backup-restore');
+  window._pendingBackup=null;
+  renderCurrentTab();
+  var bar=document.getElementById('import-bar');
+  document.getElementById('import-log').textContent='✅ Sauvegarde restaurée — '+STATE.txns.length+' transactions, '+(STATE.evCharges||[]).length+' recharges VE';
+  bar.classList.add('show'); setTimeout(function(){bar.classList.remove('show');},6000);
+}
+
+// ── IMPORT RECHARGES VE (XLS / CSV / PDF) ────────────────────────────────────
+function downloadEVTemplate(){
+  if(typeof XLSX==='undefined'){alert('Module Excel non disponible.');return;}
+  var wb=XLSX.utils.book_new();
+  var ws=XLSX.utils.aoa_to_sheet([
+    ['Date','Immatriculation','kWh','Coût (€)','Lieu','Type borne','% avant','% après','Note'],
+    ['2026-05-15','HF519FK',45.2,12.50,'Chantier','AC rapide',15,100,'Recharge site Metz'],
+    ['2026-05-20','HF519FK',38.0,10.80,'Domicile','AC lent',20,95,'']
+  ]);
+  ws['!cols']=[{wch:12},{wch:15},{wch:8},{wch:10},{wch:18},{wch:14},{wch:10},{wch:10},{wch:30}];
+  XLSX.utils.book_append_sheet(wb,ws,'Recharges VE');
+  XLSX.writeFile(wb,'AMOT_template_recharges_VE.xlsx');
+}
+
+function clickImportEV(){ document.getElementById('ev-import-input').click(); }
+
+function handleEVImportFile(files){
+  var file=files[0]; if(!file) return;
+  var ext=file.name.split('.').pop().toLowerCase();
+  document.getElementById('ev-import-input').value='';
+  if(ext==='pdf'){ parseEVPDF(file); return; }
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
+      var ws=wb.Sheets[wb.SheetNames[0]];
+      var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:'',raw:false});
+      parseEVXLS(rows);
+    }catch(err){alert('Erreur lecture fichier : '+err.message);}
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function _normHdr(h){ return String(h||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]/g,' ').trim(); }
+
+function parseEVXLS(rows){
+  if(!rows||rows.length<2){alert('Fichier vide ou non reconnu.');return;}
+  // Trouver la ligne d'en-tête
+  var hi=0;
+  for(var i=0;i<Math.min(6,rows.length);i++){if(rows[i].filter(function(c){return c!=='';}).length>=2){hi=i;break;}}
+  var hdr=rows[hi].map(_normHdr);
+  function col(keys){
+    for(var k=0;k<keys.length;k++){for(var j=0;j<hdr.length;j++){if(hdr[j].indexOf(keys[k])!==-1)return j;}}
+    return -1;
+  }
+  var cDate=col(['date']),cPlate=col(['immat','plaque','plate','vehicule','vehicle']),
+      cKwh=col(['kwh','energie','energy','consomm']),cCost=col(['cout','cost','montant','prix','eur']),
+      cLieu=col(['lieu','location','site','station']),cType=col(['type','borne','charger']),
+      cPB=col(['avant','before']),cPA=col(['apres','after']),cNote=col(['note','commentaire','info']);
+
+  function parseDate(v){
+    if(!v) return '';
+    if(typeof v==='number'){ // Excel serial
+      var d=new Date(Math.round((v-25569)*86400*1000));
+      return d.toISOString().slice(0,10);
+    }
+    var s=String(v).trim();
+    var m=s.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})$/);
+    if(m) return (m[3].length===2?'20'+m[3]:m[3])+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+    if(s.match(/^\d{4}-\d{2}-\d{2}/)) return s.slice(0,10);
+    return '';
+  }
+  function parseNum(v){ return parseFloat(String(v||'').replace(',','.'))||0; }
+
+  var entries=[];
+  for(var r=hi+1;r<rows.length;r++){
+    var row=rows[r];
+    if(!row.some(function(c){return c!=='';})) continue;
+    var d=parseDate(cDate>=0?row[cDate]:'');
+    if(!d) continue;
+    var kwh=parseNum(cKwh>=0?row[cKwh]:0);
+    var cost=parseNum(cCost>=0?row[cCost]:0);
+    var plate=normP(String(cPlate>=0?row[cPlate]||'':'').trim());
+    var location=String(cLieu>=0?row[cLieu]||'':'').trim();
+    var chargerType=String(cType>=0?row[cType]||'':'').trim();
+    var pctBefore=cPB>=0&&row[cPB]!==''&&row[cPB]!==null?parseInt(row[cPB]):null;
+    var pctAfter=cPA>=0&&row[cPA]!==''&&row[cPA]!==null?parseInt(row[cPA]):null;
+    var note=String(cNote>=0?row[cNote]||'':'').trim();
+    if(!kwh&&!plate) continue;
+    entries.push({date:d,plate:plate,kwh:kwh,cost:cost,km:0,pctBefore:pctBefore,pctAfter:pctAfter,location:location,chargerType:chargerType,note:note});
+  }
+  if(!entries.length){alert('Aucune donnée reconnue.\nVérifiez que les colonnes correspondent au modèle.\nTéléchargez le modèle XLS pour voir le format attendu.');return;}
+  showEVImportPreview(entries);
+}
+
+var _pdfjsReady=false;
+function parseEVPDF(file){
+  if(typeof pdfjsLib==='undefined'){alert('Lecteur PDF non disponible. Utilisez un fichier Excel.');return;}
+  if(!_pdfjsReady){
+    try{pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';}catch(e){}
+    _pdfjsReady=true;
+  }
+  var reader=new FileReader();
+  reader.onload=function(e){
+    pdfjsLib.getDocument({data:new Uint8Array(e.target.result)}).promise.then(function(pdf){
+      var pageTexts=[];
+      var total=pdf.numPages,done=0;
+      for(var p=1;p<=total;p++){
+        (function(pn){
+          pdf.getPage(pn).then(function(page){
+            page.getTextContent().then(function(tc){
+              pageTexts[pn-1]=tc.items.map(function(i){return i.str;}).join(' ');
+              if(++done===total){
+                var fullText=pageTexts.join('\n');
+                var entries=extractEVFromPDFText(fullText);
+                if(!entries.length) alert('Aucune donnée de recharge extraite du PDF.\nLe format de ce fichier n\'est pas reconnu automatiquement.\nConvertissez en Excel via votre outil de facturation pour un import fiable.');
+                else showEVImportPreview(entries);
+              }
+            });
+          });
+        })(p);
+      }
+    }).catch(function(err){alert('Erreur lecture PDF : '+err.message);});
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function extractEVFromPDFText(text){
+  var dateRe=/(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})/g;
+  var kwhRe=/(\d+[,\.]?\d*)\s*kWh/gi;
+  var priceRe=/(\d+[,\.]\d{2})\s*[€E](?:UR|ur)?/g;
+  var plateRe=/\b([A-HJ-NP-Z]{2}[\s\-]?\d{3}[\s\-]?[A-HJ-NP-Z]{2})\b/g;
+  function parseNum(s){return parseFloat(String(s).replace(',','.'))||0;}
+  function collect(re,txt){var m,arr=[];while((m=re.exec(txt))!==null)arr.push({val:m,idx:m.index});return arr;}
+
+  var dates=[],kwhArr=[],prices=[],plates=[];
+  var m;
+  while((m=dateRe.exec(text))!==null){
+    var d=(m[3].length===2?'20'+m[3]:m[3])+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+    if(d>='2020-01-01'&&d<='2030-12-31') dates.push({val:d,idx:m.index});
+  }
+  while((m=kwhRe.exec(text))!==null) kwhArr.push({kwh:parseNum(m[1]),idx:m.index});
+  while((m=priceRe.exec(text))!==null) prices.push({cost:parseNum(m[1]),idx:m.index});
+  while((m=plateRe.exec(text))!==null) plates.push({plate:normP(m[1]),idx:m.index});
+
+  if(!dates.length||!kwhArr.length) return [];
+
+  function nearest(arr,idx,key){
+    return arr.reduce(function(b,x){return Math.abs(x.idx-idx)<Math.abs(b.idx-idx)?x:b;},arr[0]);
+  }
+  var seen={},entries=[];
+  dates.forEach(function(dt){
+    var kw=kwhArr.length?nearest(kwhArr,dt.idx,'kwh'):null; if(!kw||kw.kwh<=0) return;
+    var pr=prices.length?nearest(prices,dt.idx,'cost'):null;
+    var pl=plates.length?nearest(plates,dt.idx,'plate'):null;
+    var key=dt.val+'_'+kw.kwh;
+    if(seen[key]) return; seen[key]=true;
+    entries.push({date:dt.val,plate:pl?pl.plate:'',kwh:kw.kwh,cost:pr?pr.cost:0,km:0,
+      pctBefore:null,pctAfter:null,location:'',chargerType:'',note:'Import PDF'});
+  });
+  return entries;
+}
+
+var _evImportPending=[];
+function showEVImportPreview(entries){
+  _evImportPending=entries;
+  var evVehicles=STATE.cfg.vehicles.filter(function(v){return v.electric||v.fuelType==='electrique';});
+  var existing=STATE.evCharges||[];
+  var newCount=0,dupCount=0;
+  var html='<div style="max-height:52vh;overflow-y:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">';
+  html+='<thead><tr style="background:#f8f8f6;position:sticky;top:0">';
+  html+='<th style="padding:6px 8px;border-bottom:2px solid #ddd;text-align:left">Date</th>';
+  html+='<th style="padding:6px 8px;border-bottom:2px solid #ddd;text-align:left">Plaque</th>';
+  html+='<th style="padding:6px 8px;border-bottom:2px solid #ddd;text-align:right">kWh</th>';
+  html+='<th style="padding:6px 8px;border-bottom:2px solid #ddd;text-align:right">Coût</th>';
+  html+='<th style="padding:6px 8px;border-bottom:2px solid #ddd">Lieu</th>';
+  html+='<th style="padding:6px 8px;border-bottom:2px solid #ddd">Statut</th></tr></thead><tbody>';
+  entries.forEach(function(e){
+    var isDup=existing.some(function(x){return x.date===e.date&&normP(x.plate)===normP(e.plate)&&Math.abs((x.kwh||0)-e.kwh)<0.5;});
+    var known=evVehicles.some(function(v){return normP(v.plate)===normP(e.plate);});
+    var badge=isDup?'<span style="background:#fef8f0;color:#b8690a;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">Doublon</span>':
+      (!known&&e.plate?'<span style="background:#fdf3f2;color:#c0392b;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">Immat. inconnue</span>':
+      '<span style="background:#f0f9f3;color:#2d7d46;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">Nouveau</span>');
+    if(isDup) dupCount++; else newCount++;
+    html+='<tr style="border-bottom:1px solid #f0f0ed;'+(isDup?'opacity:.5':'')+'">'+
+      '<td style="padding:5px 8px">'+fdate(e.date)+'</td>'+
+      '<td style="padding:5px 8px;font-weight:700">'+(e.plate||'<span style="color:#aaa">—</span>')+'</td>'+
+      '<td style="padding:5px 8px;text-align:right"><strong>'+e.kwh+'</strong> kWh</td>'+
+      '<td style="padding:5px 8px;text-align:right">'+(e.cost>0?eur(e.cost):'—')+'</td>'+
+      '<td style="padding:5px 8px;color:#888">'+(e.location||'—')+'</td>'+
+      '<td style="padding:5px 8px">'+badge+'</td></tr>';
+  });
+  html+='</tbody></table></div>';
+  document.getElementById('ev-import-preview-body').innerHTML=html;
+  document.getElementById('ev-import-count').textContent=newCount+' nouveau(x) · '+dupCount+' doublon(s) ignoré(s)';
+  openModal('modal-ev-import');
+}
+
+function confirmEVImport(){
+  var existing=STATE.evCharges||[];
+  var added=0;
+  _evImportPending.forEach(function(e){
+    var isDup=existing.some(function(x){return x.date===e.date&&normP(x.plate)===normP(e.plate)&&Math.abs((x.kwh||0)-e.kwh)<0.5;});
+    if(!isDup){
+      existing.push({id:uid(),plate:e.plate,date:e.date,kwh:e.kwh,cost:e.cost,km:e.km||0,
+        pctBefore:e.pctBefore,pctAfter:e.pctAfter,location:e.location,chargerType:e.chargerType,note:e.note});
+      added++;
+    }
+  });
+  STATE.evCharges=existing;
+  LS.set('afev2',STATE.evCharges);
+  _evImportPending=[];
+  closeModal('modal-ev-import');
+  var bar=document.getElementById('import-bar');
+  document.getElementById('import-log').textContent='⚡ '+added+' recharge(s) VE importée(s)';
+  bar.classList.add('show'); setTimeout(function(){bar.classList.remove('show');},5000);
+  renderKm();
+}
+
 loadState();
 document.getElementById('login-logo').src=LOGO_SRC;
 if(restoreAuth()){
@@ -2753,6 +3056,38 @@ if(restoreAuth()){
         <button class="btn" onclick="closeModal('modal-ev')">Annuler</button>
         <button class="btn primary" onclick="saveEV()">Enregistrer</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Preview import recharges VE -->
+<div id="modal-ev-import" class="modal-bg">
+  <div class="modal" style="max-width:680px">
+    <h2>&#128196; Import recharges VE <button class="x" onclick="closeModal('modal-ev-import')">&#215;</button></h2>
+    <div style="background:var(--gb);border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:13px;display:flex;align-items:center;justify-content:space-between">
+      <span>Aperçu des lignes détectées — les doublons ne seront pas réimportés.</span>
+      <span id="ev-import-count" style="font-weight:700;color:var(--gd)"></span>
+    </div>
+    <div id="ev-import-preview-body"></div>
+    <div class="flex-between" style="margin-top:14px">
+      <button class="btn" onclick="closeModal('modal-ev-import')">Annuler</button>
+      <button class="btn primary" onclick="confirmEVImport()">&#10003; Confirmer l'import</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal : Confirmation restauration sauvegarde -->
+<div id="modal-backup-restore" class="modal-bg">
+  <div class="modal" style="max-width:440px">
+    <h2>&#128228; Restaurer une sauvegarde <button class="x" onclick="closeModal('modal-backup-restore')">&#215;</button></h2>
+    <div style="background:#fdf3f2;border:1px solid #c0392b22;border-radius:8px;padding:12px;margin-bottom:14px">
+      <div style="font-weight:700;color:var(--red);margin-bottom:6px">&#9888;&#65039; Attention</div>
+      <div style="font-size:13px;color:#555">Cette opération <strong>remplace toutes les données actuelles</strong> par celles de la sauvegarde. Cette action est irréversible.</div>
+    </div>
+    <div id="backup-info" style="background:#f8f8f6;border-radius:8px;padding:12px;margin-bottom:16px"></div>
+    <div class="flex-between">
+      <button class="btn" onclick="closeModal('modal-backup-restore')">Annuler</button>
+      <button class="btn danger" style="background:var(--red);color:#fff;border-color:var(--red)" onclick="confirmRestoreBackup()">&#128228; Restaurer maintenant</button>
     </div>
   </div>
 </div>
