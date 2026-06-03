@@ -17,7 +17,7 @@ header{background:#fff;border-bottom:1px solid var(--bdr);padding:0 20px;display
 .brand .sep{width:1px;height:24px;background:var(--bdr)}
 .hd-title{font-weight:700;font-size:13px}
 .hd-sub{font-size:11px;color:#888}
-nav{background:#fff;border-bottom:1px solid var(--bdr);display:flex;overflow-x:auto;padding:0 12px}
+nav{background:#fff;border-bottom:1px solid var(--bdr);display:flex;overflow-x:auto;padding:0 12px;position:sticky;top:56px;z-index:99;box-shadow:0 1px 3px #0001}
 nav button{display:flex;align-items:center;gap:5px;padding:12px 14px;border:none;background:none;border-bottom:2.5px solid transparent;color:#888;cursor:pointer;font-size:13px;white-space:nowrap;font-weight:500;transition:color .15s}
 nav button.active{color:#1a1a1a;border-bottom-color:var(--g);font-weight:700}
 nav .badge{background:var(--red);color:#fff;border-radius:10px;font-size:10px;padding:1px 6px;font-weight:700}
@@ -1051,7 +1051,6 @@ function renderDashboard(){
         html+='<div style="color:#888;margin-top:1px">'+last.kwh+' kWh'+(last.cost?' · '+eur(last.cost):'')+(last.location?' · '+last.location:'')+'</div>';
       } else {
         html+='<div style="color:#aaa;margin-top:4px">Aucune recharge enregistrée</div>';
-        if(IS_ADMIN()) html+='<button class="btn sm primary" onclick="openNewEV()" style="margin-top:6px;font-size:11px">+ Recharge</button>';
       }
       html+='</div>';
     });
