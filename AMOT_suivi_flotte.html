@@ -7,6 +7,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
+<script src="https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f4f4f2;color:#1a1a1a;font-size:14px}
@@ -93,25 +94,17 @@ tfoot td{padding:8px 11px;font-weight:700;background:#f8f8f6;border-top:2px soli
       <div style="font-weight:800;font-size:18px;margin-bottom:4px">Connexion</div>
       <div style="color:#888;font-size:13px">AMOT Ferroviaire &mdash; Suivi flotte</div>
     </div>
-    <div style="margin-bottom:12px">
-      <label style="font-size:12px;color:#888;font-weight:600;display:block;margin-bottom:5px">Adresse email</label>
-      <input type="email" id="li-email" placeholder="prenom.nom@amot-ferro.fr"
-        style="font-size:14px;padding:10px 13px"
-        onkeydown="if(event.key==='Enter')document.getElementById('li-pwd').focus()"/>
+    <div id="li-msal-warn" style="display:none;font-size:12px;color:#b8690a;padding:8px 10px;
+      background:#fef8f0;border:1px solid #f0c07022;border-radius:7px;margin-bottom:14px">
+      &#9888;&#65039; Configuration Azure non d&eacute;finie - contactez l'administrateur
     </div>
-    <div style="margin-bottom:8px">
-      <label style="font-size:12px;color:#888;font-weight:600;display:block;margin-bottom:5px">Mot de passe</label>
-      <input type="password" id="li-pwd" placeholder="&bull;&bull;&bull;&bull;&bull;&bull;&bull;&bull;"
-        style="font-size:14px;padding:10px 13px"
-        onkeydown="if(event.key==='Enter')doLogin()"/>
-    </div>
-    <div id="li-err" style="display:none;font-size:12px;color:#c0392b;padding:8px 10px;
-      background:#fdf3f2;border-radius:7px;margin-bottom:10px"></div>
-    <button onclick="doLogin()" style="width:100%;padding:11px;font-size:15px;font-weight:700;
-      background:#ACC200;border:none;border-radius:8px;cursor:pointer;margin-top:4px;color:#1a1a1a">
-      Se connecter
+    <button onclick="msalLogin()" style="width:100%;padding:11px;font-size:15px;font-weight:700;
+      background:#ACC200;border:none;border-radius:8px;cursor:pointer;margin-top:4px;color:#1a1a1a;
+      display:flex;align-items:center;justify-content:center;gap:10px">
+      <svg width="20" height="20" viewBox="0 0 21 21" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>
+      Se connecter avec Microsoft
     </button>
-    <div style="text-align:center;margin-top:14px;font-size:11px;color:#bbb">Acces restreint</div>
+    <div style="text-align:center;margin-top:14px;font-size:11px;color:#bbb">Acc&egrave;s restreint &mdash; Authentification Microsoft</div>
   </div>
 </div>
 
@@ -368,7 +361,7 @@ function loadState(){
       STATE.txns=EMBEDDED_DATA.txns||[];
       STATE.alerts=EMBEDDED_DATA.alerts||[];
       STATE.pv=EMBEDDED_DATA.pv||[];
-      if(IS_ADMIN){ var lt=LS.get(SK.txn); if(lt&&lt.length>STATE.txns.length) STATE.txns=lt; }
+      if(IS_ADMIN()){ var lt=LS.get(SK.txn); if(lt&&lt.length>STATE.txns.length) STATE.txns=lt; }
     } else {
       var c=LS.get(SK.cfg),t=LS.get(SK.txn),a=LS.get(SK.alt),p=LS.get(SK.pv),km=LS.get(SK.km);
       if(c){STATE.cfg=c;
@@ -717,7 +710,7 @@ function renderCurrentTab(){
 
 // PUBLISH
 function publishHTML(){
-  if(!IS_ADMIN) return;
+  if(!IS_ADMIN()) return;
   var data=JSON.stringify({cfg:STATE.cfg,txns:STATE.txns,alerts:STATE.alerts,pv:STATE.pv,km:STATE.km||[]});
   var src=document.documentElement.outerHTML;
   var updated=src.replace('const EMBEDDED_DATA = null;','const EMBEDDED_DATA = '+data+';');
@@ -873,7 +866,7 @@ function renderDashboard(){
     html+='<div class="card" style="text-align:center;padding:3rem">';
     html+='<div style="font-size:3rem;margin-bottom:10px">&#128194;</div>';
     html+='<div style="font-weight:700;font-size:16px;margin-bottom:8px">Aucune donnee chargee</div>';
-    if(IS_ADMIN) html+='<div style="color:#888;margin-bottom:16px">Importez vos fichiers Excel TotalEnergies via le bouton en haut a droite.</div>';
+    if(IS_ADMIN()) html+='<div style="color:#888;margin-bottom:16px">Importez vos fichiers Excel TotalEnergies via le bouton en haut a droite.</div>';
     else html+='<div style="color:#888">Les donnees seront disponibles prochainement.</div>';
     html+='</div>';
   } else {
@@ -2069,7 +2062,7 @@ function renderAlertCard(a,showAct){
   if(!IS_COLLAB()){ if(isCl&&a.closedComment) html+='<div style="font-size:12px;color:#555;margin-top:4px;padding:5px 8px;background:#fff;border-radius:6px;border:1px solid var(--bdr)">Commentaire: '+a.closedComment+'</div>'; }
   if(comments.length>0){html+='<div style="margin-top:7px;border-top:1px solid #e0e0dc30;padding-top:5px">';comments.forEach(function(c){html+='<div style="font-size:11px;color:#888;margin-bottom:2px"><strong style="color:#555">'+c.author+'</strong> &middot; '+new Date(c.date).toLocaleDateString('fr-FR',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' - '+c.text+'</div>';});html+='</div>';}
   html+='</div>';
-  if(showAct&&IS_ADMIN){
+  if(showAct&&IS_ADMIN()){
     html+='<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">';
     if(!isCl){
       html+='<button class="btn sm" data-aid="'+a.id+'" onclick="openAssignAlert(this.dataset.aid)">'+(a.assignedTo?'Re-assigner':'Assigner')+'</button>';
@@ -2135,7 +2128,7 @@ function renderAlerts(){
 }
 
 function openAssignAlert(id){
-  if(!IS_ADMIN) return;
+  if(!IS_ADMIN()) return;
   alCurId=id;
   var a=STATE.alerts.find(function(x){return x.id===id;});
   document.getElementById('assign-alert-msg').textContent=a?a.msg:'';
@@ -2158,16 +2151,16 @@ function doAssignAlert(){
   updateBadges();closeModal('modal-assign-alert');renderAlerts();
 }
 function selectClose(type){document.getElementById('close-type').value=type;var ok=document.getElementById('ct-ok'),surv=document.getElementById('ct-surv');ok.style.borderColor=type==='cloture'?'var(--grn)':"var(--bdr)";ok.style.background=type==='cloture'?'var(--grnb)':'#fff';surv.style.borderColor=type==='cloture_surveiller'?'var(--org)':"var(--bdr)";surv.style.background=type==='cloture_surveiller'?'var(--orgb)':'#fff';}
-function openCloseAlert(id){if(!IS_ADMIN)return;alCurId=id;var a=STATE.alerts.find(function(x){return x.id===id;});document.getElementById('close-alert-msg').textContent=a?a.msg:'';document.getElementById('close-comment').value='';selectClose('cloture');openModal('modal-close-alert');}
+function openCloseAlert(id){if(!IS_ADMIN())return;alCurId=id;var a=STATE.alerts.find(function(x){return x.id===id;});document.getElementById('close-alert-msg').textContent=a?a.msg:'';document.getElementById('close-comment').value='';selectClose('cloture');openModal('modal-close-alert');}
 function doCloseAlert(){if(!alCurId)return;var type=document.getElementById('close-type').value||'cloture';var comment=(document.getElementById('close-comment').value||'').trim();if(IS_USER()&&!comment){alert('Commentaire obligatoire pour clôturer.');document.getElementById('close-comment').focus();return;}var now=new Date().toISOString();STATE.alerts=STATE.alerts.map(function(a){return a.id!==alCurId?a:{...a,status:type,read:true,closedAt:now,closedType:type,closedComment:comment,comments:[...(a.comments||[]),{date:now,author:'Admin',text:'Cloturee - '+(type==='cloture_surveiller'?'A surveiller':'Traitee')+(comment?' : '+comment:'')}]};});LS.set(SK.alt,STATE.alerts);updateBadges();closeModal('modal-close-alert');renderAlerts();}
 // addAlertNote replaced by modal version
-function markAlertRead(id){if(!IS_ADMIN)return;STATE.alerts=STATE.alerts.map(function(a){return a.id===id?{...a,read:true}:a;});LS.set(SK.alt,STATE.alerts);updateBadges();renderAlerts();}
-function markAllRead(){if(!IS_ADMIN)return;STATE.alerts=STATE.alerts.map(function(a){return{...a,read:true};});LS.set(SK.alt,STATE.alerts);updateBadges();renderAlerts();}
+function markAlertRead(id){if(!IS_ADMIN())return;STATE.alerts=STATE.alerts.map(function(a){return a.id===id?{...a,read:true}:a;});LS.set(SK.alt,STATE.alerts);updateBadges();renderAlerts();}
+function markAllRead(){if(!IS_ADMIN())return;STATE.alerts=STATE.alerts.map(function(a){return{...a,read:true};});LS.set(SK.alt,STATE.alerts);updateBadges();renderAlerts();}
 
 // ── ASSIGN TRANSACTION ────────────────────────────────────────
 var atxId=null;
 function openAssignTx(txid){
-  if(!IS_ADMIN)return;atxId=txid;
+  if(!IS_ADMIN())return;atxId=txid;
   var tx=STATE.txns.find(function(t){return t.id===txid;});if(!tx)return;
   document.getElementById('assign-tx-info').innerHTML='<strong>'+(tx.driver||'Inconnu')+'</strong> | '+tx.plate+' | <span class="badge bg">'+tx.product+'</span> '+eur(tx.amount)+' le '+fdate(tx.date)+'<br><small style="color:#888">'+tx.station+' '+tx.location+'</small>';
   var drv=[...new Set(STATE.cfg.vehicles.map(function(v){return v.name;}))].sort();
@@ -2325,14 +2318,28 @@ function renderConfig(){
   html+='</div>';
   html+='</div>';
 
-  html+='<div class="card"><h3>&#128100; Utilisateurs (connexion)</h3>';
-  html+='<div style="font-size:12px;color:#888;margin-bottom:10px">Email + mot de passe pour se connecter. Publiez apres modification pour que tous les utilisateurs voient les changements.</div>';
+  // ── AZURE APP CONFIG ──
+  var _msalCfg=LS.get('amot_msal_cfg')||{};
+  html+='<div class="card" style="border-left:4px solid #0078d4">';
+  html+='<h3 style="margin-bottom:10px">&#128274; Configuration Azure (Microsoft SSO)</h3>';
+  html+='<div style="font-size:12px;color:#888;margin-bottom:12px">Renseignez les informations de votre application Azure AD pour activer l\'authentification Microsoft.</div>';
+  html+='<div class="g2" style="margin-bottom:10px">';
+  html+='<div><label class="lb">Client ID (Application ID)</label><input type="text" id="msal-client-id" value="'+(_msalCfg.clientId||'')+'" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"/></div>';
+  html+='<div><label class="lb">Tenant ID (ou "common")</label><input type="text" id="msal-tenant-id" value="'+(_msalCfg.tenantId||'common')+'" placeholder="common"/></div>';
+  html+='</div>';
+  html+='<button class="btn primary" onclick="saveMSALConfig()">Enregistrer la configuration Azure</button>';
+  html+='</div>';
+
+  html+='<div class="card"><h3>&#128100; Utilisateurs (acc&egrave;s)</h3>';
+  html+='<div style="font-size:12px;color:#888;margin-bottom:10px">Comptes Microsoft autorisés à accéder à l\'application. L\'authentification se fait via Microsoft SSO.</div>';
   html+='<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:12px">';
   getAuthUsers().forEach(function(u){
+    var roleLbl=u.role==='admin'?'Admin':u.role==='collaborateur'?'Collaborateur':'Utilisateur';
+    var roleCls=u.role==='admin'?'bg':u.role==='collaborateur'?'bb':'bz';
     html+='<div style="display:flex;align-items:center;gap:8px;padding:7px 11px;background:#f8f8f6;border-radius:8px;font-size:13px">';
     html+='<span>&#128100;</span>';
     html+='<div style="flex:1"><strong>'+u.name+'</strong> &nbsp;<span style="color:#888;font-size:12px">'+u.email+'</span></div>';
-    html+='<span class="badge '+(u.admin?'bg':'bz')+'">'+(u.admin?'Admin':'Utilisateur')+'</span>';
+    html+='<span class="badge '+roleCls+'">'+roleLbl+'</span>';
     var isDefault = DEFAULT_AUTH_USERS.find(function(d){return d.id===u.id;});
     if(!isDefault){
       html+='<button class="btn sm danger" data-uid="'+u.id+'" onclick="deleteAuthUser(this.dataset.uid)">&#x2715;</button>';
@@ -2342,10 +2349,9 @@ function renderConfig(){
   html+='</div>';
   html+='<div style="background:#f8f8f6;border-radius:10px;padding:12px;margin-bottom:4px">';
   html+='<div style="font-weight:600;font-size:13px;margin-bottom:8px">Ajouter un utilisateur</div>';
-  html+='<div class="g4" style="margin-bottom:8px">';
+  html+='<div class="g3" style="margin-bottom:8px">';
   html+='<div><label class="lb">Nom</label><input type="text" id="nu-name" placeholder="DUPUIS Patrick"/></div>';
-  html+='<div><label class="lb">Email</label><input type="email" id="nu-email" placeholder="email@amot-ferro.fr"/></div>';
-  html+='<div><label class="lb">Mot de passe</label><input type="text" id="nu-pwd" placeholder="MotDePasse123"/></div>';
+  html+='<div><label class="lb">Email Microsoft</label><input type="email" id="nu-email" placeholder="email@exemple.fr"/></div>';
   html+='<div><label class="lb">Role</label><select id="nu-admin"><option value="utilisateur">Utilisateur</option><option value="collaborateur">Collaborateur</option><option value="admin">Administrateur</option></select></div>';
   html+='</div>';
   html+='<button class="btn primary" onclick="addAuthUser()">+ Ajouter</button>';
@@ -2383,8 +2389,8 @@ function addV(){var name=document.getElementById('nv-name').value,plate=document
 var AUTH_USER = null;
 
 var DEFAULT_AUTH_USERS = [
-  {id:'u001', name:'BOUTON Tyfanie',  email:'tyfanie@amot-ferro.fr', pwd:'Amot2026!', admin:true},
-  {id:'u002', name:'LEGOY Adrien',    email:'adrien@amot-ferro.fr',  pwd:'Amot2026!', admin:true}
+  {id:'u001', name:'Tyfanie',  email:'tyfanie@al-conseil.com', role:'admin'},
+  {id:'u002', name:'Adrien',   email:'adrien@al-conseil.com',  role:'utilisateur'}
 ];
 
 function getAuthUsers() {
@@ -2395,39 +2401,84 @@ function getAuthUsers() {
   return defaults.concat(extra);
 }
 
-function doLogin() {
-  var email = (document.getElementById('li-email').value||'').trim().toLowerCase();
-  var pwd   = document.getElementById('li-pwd').value || '';
-  var err   = document.getElementById('li-err');
-  var user  = getAuthUsers().find(function(u){ return u.email.toLowerCase()===email && u.pwd===pwd; });
-  if (user) {
-    AUTH_USER = user;
-    sessionStorage.setItem('amot_auth', JSON.stringify({id:user.id, email:user.email, admin:user.admin}));
+// ── MSAL ──────────────────────────────────────────────────────────────────────
+var MSAL_INSTANCE = null;
+
+function getMSALConfig() {
+  var c = LS.get('amot_msal_cfg') || {};
+  return {
+    clientId: c.clientId || '',
+    tenantId: c.tenantId || 'common'
+  };
+}
+
+function initMSAL() {
+  var cfg = getMSALConfig();
+  var msalConfig = {
+    auth: {
+      clientId: cfg.clientId || 'placeholder',
+      authority: 'https://login.microsoftonline.com/' + cfg.tenantId,
+      redirectUri: window.location.href.split('?')[0]
+    },
+    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
+  };
+  MSAL_INSTANCE = new msal.PublicClientApplication(msalConfig);
+}
+
+async function msalLogin() {
+  var cfg = getMSALConfig();
+  if (!cfg.clientId) {
+    document.getElementById('li-msal-warn').style.display = 'block';
+  }
+  initMSAL();
+  try {
+    var result = await MSAL_INSTANCE.loginPopup({
+      scopes: ['openid', 'profile', 'email', 'User.Read']
+    });
+    var email = result.account.username.toLowerCase();
+    var users = getAuthUsers();
+    var match = users.find(function(u){ return u.email && u.email.toLowerCase() === email; });
+    if (!match) {
+      alert('Accès non autorisé. Votre compte ' + email + ' n\'est pas affilié à un profil. Contactez l\'administrateur.');
+      return;
+    }
+    AUTH_USER = { id: match.id, name: match.name || result.account.name, email: match.email, admin: match.role === 'admin', role: match.role };
+    LS.set('amot_auth_session', AUTH_USER);
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('app-root').style.display = 'block';
     applyAuthUI();
-    renderCurrentTab();
-  } else {
-    err.style.display = 'block';
-    err.textContent = 'Email ou mot de passe incorrect.';
-    document.getElementById('li-pwd').focus();
+    renderDashboard();
+    updateBadges(); updateLastUpdate(); renderCurrentTab();
+  } catch(e) {
+    if (e.errorCode !== 'user_cancelled') {
+      alert('Erreur de connexion: ' + (e.message || e));
+    }
   }
 }
 
-function doLogout() {
+function msalLogout() {
+  LS.set('amot_auth_session', null);
   AUTH_USER = null;
-  sessionStorage.removeItem('amot_auth');
-  document.getElementById('login-screen').style.display = 'flex';
-  document.getElementById('app-root').style.display = 'none';
+  if (MSAL_INSTANCE) {
+    try { MSAL_INSTANCE.logout(); } catch(e) {}
+    MSAL_INSTANCE = null;
+  }
+  location.reload();
+}
+
+function doLogout() {
+  msalLogout();
 }
 
 function restoreAuth() {
   try {
-    var s = sessionStorage.getItem('amot_auth');
-    if (!s) return false;
-    var saved = JSON.parse(s);
-    var user = getAuthUsers().find(function(u){ return u.id===saved.id && u.email===saved.email; });
-    if (user) { AUTH_USER = user; return true; }
+    var saved = LS.get('amot_auth_session');
+    if (!saved || !saved.email) return false;
+    var user = getAuthUsers().find(function(u){ return u.email && u.email.toLowerCase() === saved.email.toLowerCase(); });
+    if (user) {
+      AUTH_USER = { id: user.id, name: user.name, email: user.email, admin: user.role === 'admin', role: user.role };
+      return true;
+    }
   } catch(e) {}
   return false;
 }
@@ -2458,20 +2509,17 @@ function applyAuthUI() {
   }
 }
 
-function IS_ADMIN() { return !!(AUTH_USER && AUTH_USER.admin); }
-
 function addAuthUser(){
   var name  = document.getElementById('nu-name').value.trim();
   var email = document.getElementById('nu-email').value.trim().toLowerCase();
-  var pwd   = document.getElementById('nu-pwd').value.trim();
   var _role=document.getElementById('nu-admin').value;
   var admin=_role==='admin';
-  if (!email || !pwd) { alert('Email et mot de passe obligatoires.'); return; }
+  if (!email) { alert('Email obligatoire.'); return; }
   if (getAuthUsers().find(function(u){ return u.email.toLowerCase()===email; })){
     alert('Cet email existe deja.'); return;
   }
   var users = STATE.cfg.authUsers || [];
-  users.push({id:'u_'+uid(),name:name||email,email:email,pwd:pwd,admin:admin,role:_role});
+  users.push({id:'u_'+uid(),name:name||email,email:email,admin:admin,role:_role});
   STATE.cfg.authUsers = users;
   LS.set(SK.cfg, STATE.cfg);
   renderConfig();
@@ -2479,6 +2527,14 @@ function addAuthUser(){
 function deleteAuthUser(id){
   STATE.cfg.authUsers = (STATE.cfg.authUsers||[]).filter(function(u){ return u.id!==id; });
   LS.set(SK.cfg, STATE.cfg);
+  renderConfig();
+}
+
+function saveMSALConfig(){
+  var clientId=(document.getElementById('msal-client-id').value||'').trim();
+  var tenantId=(document.getElementById('msal-tenant-id').value||'common').trim()||'common';
+  LS.set('amot_msal_cfg',{clientId:clientId,tenantId:tenantId});
+  alert('Configuration Azure enregistrée.');
   renderConfig();
 }
 
@@ -2991,6 +3047,8 @@ function confirmEVImport(){
 
 loadState();
 document.getElementById('login-logo').src=LOGO_SRC;
+// Show Azure config warning if no clientId set
+(function(){var c=LS.get('amot_msal_cfg')||{};if(!c.clientId){var w=document.getElementById('li-msal-warn');if(w)w.style.display='block';}})();
 if(restoreAuth()){
   document.getElementById('login-screen').style.display='none';
   document.getElementById('app-root').style.display='block';
