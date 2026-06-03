@@ -531,6 +531,73 @@ function computeAlerts(){
   return alerts.sort(function(a,b){return ({danger:0,warning:1,info:2}[a.sev]||2)-({danger:0,warning:1,info:2}[b.sev]||2);});
 }
 
+// ── HELPERS EV INTÉGRATION ────────────────────────────────────────────────────
+function findEVDriver(c){
+  var v=STATE.cfg.vehicles.find(function(vv){return vv.plate===c.plate;});
+  if(!v) return '';
+  var td=c.date;
+  var va=(STATE.cfg.vehicleAssignments||[]).find(function(a){return a.vid===v.id&&a.start<=td&&(!a.end||a.end>=td);});
+  if(va) return va.driverName;
+  var pl=(STATE.cfg.planning||[]).find(function(p){return p.vid===v.id&&p.start<=td&&(!p.end||p.end>=td);});
+  return pl?pl.driverName:v.name;
+}
+function findEVWorksite(c){
+  var v=STATE.cfg.vehicles.find(function(vv){return vv.plate===c.plate;});
+  if(!v) return null;
+  var td=c.date;
+  return (STATE.cfg.planning||[]).find(function(p){return p.vid===v.id&&p.start<=td&&(!p.end||p.end>=td);})||null;
+}
+function getEVAsTxns(){
+  return (STATE.evCharges||[]).map(function(c){
+    var driver=findEVDriver(c);
+    var wspl=findEVWorksite(c);
+    return {id:c.id,type:'electrique',date:c.date,time:'',driver:driver,plate:c.plate,
+      amount:c.cost||0,liters:0,kwh:c.kwh||0,product:c.chargerType||'Recharge ⚡',
+      station:c.location||'Recharge EV',location:c.location||'',
+      note:c.note||'',isEV:true,planId:wspl?wspl.id:null,wsid:wspl?wspl.wsid:null};
+  });
+}
+function computeEVForecast(){
+  var now=new Date();
+  var curYear=now.getFullYear().toString();
+  var curMo=now.toISOString().slice(0,7);
+  var dayOfMonth=now.getDate();
+  var moProgress=dayOfMonth/new Date(now.getFullYear(),now.getMonth()+1,0).getDate();
+  var evVehicles=STATE.cfg.vehicles.filter(function(v){return v.electric||v.fuelType==='electrique';});
+  var allC=STATE.evCharges||[];
+  var byV={};
+  evVehicles.forEach(function(v){
+    var vC=allC.filter(function(c){return c.plate===v.plate;});
+    if(!vC.length) return;
+    byV[v.id]={name:vehicleLabel(v),kwhYtd:0,costYtd:0,mo:{}};
+    vC.forEach(function(c){
+      var mo=c.date?c.date.slice(0,7):null; if(!mo) return;
+      if(!byV[v.id].mo[mo]) byV[v.id].mo[mo]={kwh:0,cost:0};
+      byV[v.id].mo[mo].kwh+=c.kwh||0;
+      byV[v.id].mo[mo].cost+=c.cost||0;
+      if(c.date&&c.date.startsWith(curYear)){byV[v.id].kwhYtd+=c.kwh||0;byV[v.id].costYtd+=c.cost||0;}
+    });
+  });
+  return Object.values(byV).map(function(d){
+    var moKeys=Object.keys(d.mo).sort();
+    var completeMos=moKeys.filter(function(m){return m<curMo;});
+    var nC=completeMos.length;
+    var curKwh=(d.mo[curMo]||{}).kwh||0;
+    var curCost=(d.mo[curMo]||{}).cost||0;
+    var totCKwh=completeMos.reduce(function(s,m){return s+((d.mo[m]||{}).kwh||0);},0);
+    var totCCost=completeMos.reduce(function(s,m){return s+((d.mo[m]||{}).cost||0);},0);
+    var avgKwh=nC>0?totCKwh/nC:(moProgress>0?curKwh/moProgress:0);
+    var avgCost=nC>0?totCCost/nC:(moProgress>0?curCost/moProgress:0);
+    var fcKwh=Math.round(avgKwh*12);
+    var fcCost=Math.round(avgCost*12);
+    var pct=fcKwh>0?Math.min(150,Math.round(d.kwhYtd/fcKwh*100)):0;
+    var pc=pct>=100?'var(--red)':pct>=80?'var(--org)':'var(--g)';
+    return {name:d.name,kwhYtd:Math.round(d.kwhYtd),costYtd:Math.round(d.costYtd),fcKwh:fcKwh,fcCost:fcCost,pct:pct,pc:pc};
+  }).filter(function(d){return d.fcKwh>0;});
+}
+// drag-drop EV dans config
+function dz_ev_drop(e){e.preventDefault();if(e.dataTransfer&&e.dataTransfer.files.length){handleEVImportFile(e.dataTransfer.files);}}
+
 // FORECAST
 function computeForecast(){
   var byV={};
@@ -776,19 +843,30 @@ function renderDashboard(){
     if(tx.type==='carburant'){aF+=tx.amount||0;if(tx.date&&tx.date.startsWith(curYr)){yF+=tx.amount||0;yL+=tx.liters||0;}}
     if(tx.type==='peage'){aT+=tx.amount||0;if(tx.date&&tx.date.startsWith(curYr)) yT+=tx.amount||0;}
     var mo=tx.date?tx.date.slice(0,7):null; if(!mo) return;
-    if(!moData[mo]) moData[mo]={F:0,T:0};
+    if(!moData[mo]) moData[mo]={F:0,T:0,EV:0};
     if(tx.type==='carburant') moData[mo].F+=tx.amount||0;
     if(tx.type==='peage') moData[mo].T+=tx.amount||0;
+  });
+  // Intégration EV dans graphique mensuel
+  var yEVkwh=0,yEVcost=0;
+  (STATE.evCharges||[]).forEach(function(c){
+    var mo=c.date?c.date.slice(0,7):null; if(!mo) return;
+    if(!moData[mo]) moData[mo]={F:0,T:0,EV:0};
+    if(!moData[mo].EV) moData[mo].EV=0;
+    moData[mo].EV+=c.cost||0;
+    if(c.date&&c.date.startsWith(curYr)){yEVkwh+=c.kwh||0;yEVcost+=c.cost||0;}
   });
   var moKeys=Object.keys(moData).sort().slice(-12);
   var _alForKpi=IS_COLLAB()?STATE.alerts.filter(function(a){var mn=AUTH_USER?AUTH_USER.name:'';return (a.driver&&a.driver===mn)||(a.assignedTo&&a.assignedTo===mn);}):STATE.alerts;
   var crit=_alForKpi.filter(function(a){return a.sev==='danger'&&!a.read;}).length;
   var warn=_alForKpi.filter(function(a){return a.sev==='warning'&&!a.read;}).length;
   var fcs=computeForecast();
+  var evFcs=computeEVForecast();
   var html='<div class="kpis">';
   html+='<div class="kpi acc"><div class="lb">&#9981; Carburant '+curYr+'</div><div class="vl">'+eur(Math.round(yF))+'</div><div class="sb">'+Math.round(yL)+' litres</div></div>';
-  html+='<div class="kpi"><div class="lb">&#128739; Peages '+curYr+'</div><div class="vl">'+eur(Math.round(yT))+'</div></div>';
-  html+='<div class="kpi"><div class="lb">&#x1F4CB; Total all-time</div><div class="vl">'+eur(Math.round(aF+aT))+'</div><div class="sb">'+txns.length+' transactions</div></div>';
+  html+='<div class="kpi"><div class="lb">&#128739; Péages '+curYr+'</div><div class="vl">'+eur(Math.round(yT))+'</div></div>';
+  if(yEVkwh>0||yEVcost>0) html+='<div class="kpi" style="border-top-color:#f39c12"><div class="lb">&#x26A1; Électrique '+curYr+'</div><div class="vl" style="color:#f39c12">'+eur(Math.round(yEVcost))+'</div><div class="sb">'+Math.round(yEVkwh)+' kWh</div></div>';
+  html+='<div class="kpi"><div class="lb">&#x1F4CB; Total all-time</div><div class="vl">'+eur(Math.round(aF+aT+yEVcost))+'</div><div class="sb">'+(txns.length+(STATE.evCharges||[]).length)+' lignes</div></div>';
   html+='<div class="kpi '+(crit>0?'red':'')+'"><div class="lb">&#x1F514; Alertes</div><div class="vl">'+(crit+warn)+'</div><div class="sb">'+(crit>0?crit+' critique(s)':'RAS')+'</div></div>';
   html+='</div>';
   if(txns.length===0){
@@ -978,6 +1056,25 @@ function renderDashboard(){
       html+='</div>';
     });
     html+='</div>';
+    // Prévisionnel EV avec barres d'avancement
+    if(evFcs.length>0){
+      html+='<div style="margin-top:12px;border-top:1px solid #f0f0ed;padding-top:12px">';
+      html+='<div style="font-weight:700;font-size:13px;margin-bottom:10px">&#127919; Prévisionnel électrique '+new Date().getFullYear()+'</div>';
+      evFcs.forEach(function(d){
+        var pctColor=d.pc;
+        html+='<div style="margin-bottom:10px">';
+        html+='<div class="flex-between" style="font-size:12px;margin-bottom:4px">';
+        html+='<span style="font-weight:600">&#x26A1; '+d.name+'</span>';
+        html+='<span style="color:#888"><strong style="color:'+pctColor+'">'+d.kwhYtd+' kWh</strong> / '+d.fcKwh+' kWh prév.';
+        if(d.fcCost>0) html+=' &nbsp;('+eur(d.costYtd)+' / '+eur(d.fcCost)+')';
+        html+='</span></div>';
+        html+='<div class="progress-bar"><div class="progress-fill" style="width:'+Math.min(d.pct,100)+'%;background:'+pctColor+'"></div></div>';
+        html+='<div style="font-size:11px;color:#aaa;text-align:right">'+d.pct+'% de l\'objectif annuel estimé</div>';
+        html+='</div>';
+      });
+      html+='</div>';
+    }
+    html+='</div>';
     html+='</div>';
   }
 
@@ -986,11 +1083,15 @@ function renderDashboard(){
     var ctx=document.getElementById('chart-mo');
     if(ctx){
       if(chartReg.mo) chartReg.mo.destroy();
+      var hasEV=moKeys.some(function(m){return moData[m].EV>0;});
+      var moDsets=[
+        {label:'Carburant',data:moKeys.map(function(m){return Math.round(moData[m].F);}),backgroundColor:'#ACC200',stack:'s'},
+        {label:'Péages',data:moKeys.map(function(m){return Math.round(moData[m].T);}),backgroundColor:'#888780',stack:'s'}
+      ];
+      if(hasEV) moDsets.push({label:'Électrique',data:moKeys.map(function(m){return Math.round(moData[m].EV||0);}),backgroundColor:'#f39c12',stack:'s',borderRadius:{topLeft:3,topRight:3}});
       chartReg.mo=new Chart(ctx.getContext('2d'),{type:'bar',
-        data:{labels:moKeys.map(function(m){return new Date(m+'-01').toLocaleDateString('fr-FR',{month:'short',year:'2-digit'});}),
-          datasets:[{label:'Carburant',data:moKeys.map(function(m){return Math.round(moData[m].F);}),backgroundColor:'#ACC200',stack:'s'},
-                    {label:'Peages',data:moKeys.map(function(m){return Math.round(moData[m].T);}),backgroundColor:'#888780',stack:'s',borderRadius:{topLeft:3,topRight:3}}]},
-        options:{responsive:true,plugins:{legend:{labels:{boxWidth:10,font:{size:11}}}},scales:{x:{stacked:true,ticks:{font:{size:11}}},y:{stacked:true,ticks:{font:{size:11},callback:function(v){return v+'EUR';}}}}}});
+        data:{labels:moKeys.map(function(m){return new Date(m+'-01').toLocaleDateString('fr-FR',{month:'short',year:'2-digit'});}),datasets:moDsets},
+        options:{responsive:true,plugins:{legend:{labels:{boxWidth:10,font:{size:11}}}},scales:{x:{stacked:true,ticks:{font:{size:11}}},y:{stacked:true,ticks:{font:{size:11},callback:function(v){return v+'€';}}}}}});
     }
   }
 }
@@ -999,43 +1100,60 @@ function renderDashboard(){
 var txF={search:'',type:'all',month:'',driver:''};
 function renderTransactions(){
   var el=document.getElementById('p-transactions');
-  var html='';
-  var months=[...new Set(STATE.txns.map(function(t){return t.date?t.date.slice(0,7):null;}).filter(Boolean))].sort().reverse();
-  var drivers=[...new Set(STATE.txns.map(function(t){return t.driver;}).filter(Boolean))].sort();
-  var txBase=(IS_ADMIN()||!IS_COLLAB())?STATE.txns:STATE.txns.filter(isMyTx);
-  var filtered=txBase.filter(function(tx){
+  var evTxns=getEVAsTxns();
+  var allTxBase=(IS_ADMIN()||!IS_COLLAB())?STATE.txns:STATE.txns.filter(isMyTx);
+  var allMerged=allTxBase.concat(evTxns);
+  var months=[...new Set(allMerged.map(function(t){return t.date?t.date.slice(0,7):null;}).filter(Boolean))].sort().reverse();
+  var drivers=[...new Set(allMerged.map(function(t){return t.driver;}).filter(Boolean))].sort();
+  var filtered=allMerged.filter(function(tx){
     if(txF.type!=='all'&&tx.type!==txF.type) return false;
-    if(txF.month&&!tx.date.startsWith(txF.month)) return false;
+    if(txF.month&&(!tx.date||!tx.date.startsWith(txF.month))) return false;
     if(txF.driver&&tx.driver!==txF.driver) return false;
-    if(txF.search){var s=txF.search.toLowerCase();if(!(tx.driver||'').toLowerCase().includes(s)&&!(tx.station||'').toLowerCase().includes(s)) return false;}
+    if(txF.search){var s=txF.search.toLowerCase();if(!(tx.driver||'').toLowerCase().includes(s)&&!(tx.station||'').toLowerCase().includes(s)&&!(tx.plate||'').toLowerCase().includes(s)) return false;}
     return true;
   }).sort(function(a,b){return (b.date||'').localeCompare(a.date||'');});
   var total=filtered.reduce(function(s,t){return s+(t.amount||0);},0);
+  var totalKwh=filtered.filter(function(t){return t.isEV;}).reduce(function(s,t){return s+(t.kwh||0);},0);
   var html='<div class="filters">';
-  html+='<input type="text" id="tx-search" placeholder="Conducteur, station..." value="'+txF.search+'" oninput="txF.search=this.value;renderTransactions()" style="max-width:210px"/>';
-  html+='<select onchange="txF.type=this.value;renderTransactions()"><option value="all"'+(txF.type==='all'?' selected':'')+'>Tous types</option><option value="carburant"'+(txF.type==='carburant'?' selected':'')+'>Carburant</option><option value="peage"'+(txF.type==='peage'?' selected':'')+'>Peages</option></select>';
+  html+='<input type="text" id="tx-search" placeholder="Conducteur, station, plaque..." value="'+txF.search+'" oninput="txF.search=this.value;renderTransactions()" style="max-width:210px"/>';
+  html+='<select onchange="txF.type=this.value;renderTransactions()"><option value="all"'+(txF.type==='all'?' selected':'')+'>Tous types</option><option value="carburant"'+(txF.type==='carburant'?' selected':'')+'>Carburant</option><option value="peage"'+(txF.type==='peage'?' selected':'')+'>Péages</option><option value="electrique"'+(txF.type==='electrique'?' selected':'')+'>&#x26A1; Électrique</option></select>';
   html+='<select onchange="txF.month=this.value;renderTransactions()"><option value="">Tous mois</option>'+months.map(function(m){return '<option value="'+m+'"'+(txF.month===m?' selected':'')+'>'+new Date(m+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})+'</option>';}).join('')+'</select>';
   if(!IS_COLLAB()) html+='<select onchange="txF.driver=this.value;renderTransactions()"><option value="">Tous conducteurs</option>'+drivers.map(function(d){return '<option value="'+d+'"'+(txF.driver===d?' selected':'')+'>'+d+'</option>';}).join('')+'</select>';
   html+='</div>';
-  html+='<div style="color:#888;font-size:13px;margin-bottom:10px">'+filtered.length+' transaction(s) &middot; Total: <strong style="color:#1a1a1a">'+eur(total)+'</strong></div>';
+  html+='<div style="color:#888;font-size:13px;margin-bottom:10px">'+filtered.length+' ligne(s) &middot; Total: <strong style="color:#1a1a1a">'+eur(total)+'</strong>';
+  if(totalKwh>0) html+=' &middot; &#x26A1; <strong style="color:#f39c12">'+Math.round(totalKwh)+' kWh</strong>';
+  html+='</div>';
   if(filtered.length===0){
-    html+='<div class="card" style="text-align:center;padding:2rem;color:#888">'+(STATE.txns.length===0?'Importez un fichier Excel pour voir les transactions.':'Aucun resultat.')+'</div>';
+    html+='<div class="card" style="text-align:center;padding:2rem;color:#888">'+(allTxBase.length===0&&evTxns.length===0?'Importez un fichier Excel pour voir les transactions.':'Aucun résultat.')+'</div>';
   } else {
     html+='<div class="card" style="padding:0;overflow:hidden"><div style="overflow-x:auto"><table>';
-    html+='<thead><tr><th>Date</th><th>Conducteur</th><th>Produit</th><th>Station</th><th>Chantier</th><th class="tr">Litres</th><th class="tr">Montant</th></tr></thead><tbody>';
+    html+='<thead><tr><th>Date</th><th>Conducteur</th><th>Type / Produit</th><th>Station / Lieu</th><th>Chantier</th><th class="tr">Qté</th><th class="tr">Montant</th></tr></thead><tbody>';
     filtered.forEach(function(tx){
-      var plan=findPlanning(tx);
-      var ws=plan?STATE.cfg.worksites.find(function(w){return w.id===plan.wsid;}):null;
-      html+='<tr>';
-      html+='<td><div style="font-weight:600;font-size:12px">'+fdate(tx.date)+'</div><div style="font-size:11px;color:#888">'+tx.time+'</div></td>';
+      var wsid=tx.isEV?tx.wsid:null;
+      var plan=tx.isEV?null:findPlanning(tx);
+      if(tx.isEV&&tx.wsid) wsid=tx.wsid;
+      else if(plan) wsid=plan.wsid;
+      var ws=wsid?STATE.cfg.worksites.find(function(w){return w.id===wsid;}):null;
+      var isEV=tx.isEV;
+      var rowStyle=isEV?'background:#fffbf5;':'';
+      html+='<tr style="'+rowStyle+'">';
+      html+='<td><div style="font-weight:600;font-size:12px">'+fdate(tx.date)+'</div><div style="font-size:11px;color:#888">'+(tx.time||'')+'</div></td>';
       html+='<td><div style="font-weight:600">'+(tx.driver||'--')+'</div><div style="font-size:11px;color:#888">'+tx.plate+'</div></td>';
-      html+='<td><span class="badge '+(tx.type==='carburant'?'bg':'bz')+'">'+tx.product+'</span></td>';
-      html+='<td><div>'+(tx.station||'--')+'</div><div style="font-size:11px;color:#888">'+tx.location+'</div></td>';
+      if(isEV){
+        html+='<td><span class="badge" style="background:#fff3cd;color:#b8690a">&#x26A1; '+tx.product+'</span></td>';
+      } else {
+        html+='<td><span class="badge '+(tx.type==='carburant'?'bg':'bz')+'">'+tx.product+'</span></td>';
+      }
+      html+='<td><div>'+(tx.station||'--')+'</div><div style="font-size:11px;color:#888">'+(tx.location||'')+'</div></td>';
       html+='<td>'+(ws?'<span style="font-size:11px;color:var(--grn)">&#128205; '+ws.name+'</span>':'<span style="font-size:11px;color:var(--org)">hors planning</span>');
-      if(!IS_COLLAB()&&!plan) html+='<br><button class="btn sm" style="margin-top:3px;font-size:11px" data-txid="'+tx.id+'" onclick="openAssignTx(this.dataset.txid)">+ Affecter</button>';
+      if(!isEV&&!IS_COLLAB()&&!plan) html+='<br><button class="btn sm" style="margin-top:3px;font-size:11px" data-txid="'+tx.id+'" onclick="openAssignTx(this.dataset.txid)">+ Affecter</button>';
       html+='</td>';
-      html+='<td class="tr">'+(tx.liters>0?Math.round(tx.liters)+' L':'--')+'</td>';
-      html+='<td class="tr" style="font-weight:700">'+eur(tx.amount)+'</td>';
+      if(isEV){
+        html+='<td class="tr" style="color:#f39c12;font-weight:700">'+(tx.kwh>0?tx.kwh+' kWh':'--')+'</td>';
+      } else {
+        html+='<td class="tr">'+(tx.liters>0?Math.round(tx.liters)+' L':'--')+'</td>';
+      }
+      html+='<td class="tr" style="font-weight:700">'+(tx.amount>0?eur(tx.amount):'<span style="color:#aaa">—</span>')+'</td>';
       html+='</tr>';
     });
     html+='</tbody></table></div></div>';
@@ -1068,18 +1186,31 @@ function renderReports(){
   var totW=filtered.filter(function(t){return t.type==='lavage';}).reduce(function(s,t){return s+(t.amount||0);},0);
   var totP=filtered.filter(function(t){return t.type==='parking';}).reduce(function(s,t){return s+(t.amount||0);},0);
   var totL=filtered.filter(function(t){return t.type==='carburant';}).reduce(function(s,t){return s+(t.liters||0);},0);
+  // Données EV pour les synthèses (filtrées par année/mois/conducteur si applicable)
+  var evAll=getEVAsTxns().filter(function(e){
+    if(rpF.year!=='all'&&(!e.date||!e.date.startsWith(rpF.year))) return false;
+    if(rpF.month!=='all'&&(!e.date||!e.date.startsWith(rpF.month))) return false;
+    if(rpF.driver!=='all'&&e.driver!==rpF.driver) return false;
+    if(rpF.ws!=='all'&&e.wsid!==rpF.ws) return false;
+    return true;
+  });
+  var totEVcost=evAll.reduce(function(s,e){return s+(e.amount||0);},0);
+  var totEVkwh=evAll.reduce(function(s,e){return s+(e.kwh||0);},0);
   // By collab
   var byCo={};
-  filtered.forEach(function(tx){var k=tx.driver||'?';if(!byCo[k]) byCo[k]={name:k,F:0,T:0,A:0,W:0,P:0,L:0,n:0};if(tx.type==='carburant'){byCo[k].F+=tx.amount||0;byCo[k].L+=tx.liters||0;}if(tx.type==='peage') byCo[k].T+=tx.amount||0;if(tx.type==='achat') byCo[k].A+=tx.amount||0;if(tx.type==='lavage') byCo[k].W+=tx.amount||0;if(tx.type==='parking') byCo[k].P+=tx.amount||0;byCo[k].n++;});
-  var collabs=Object.values(byCo).map(function(d){return {name:d.name,F:Math.round(d.F),T:Math.round(d.T),A:Math.round(d.A||0),W:Math.round(d.W||0),P:Math.round(d.P||0),L:Math.round(d.L),n:d.n};}).sort(function(a,b){return (b.F+b.T)-(a.F+a.T);});
+  filtered.forEach(function(tx){var k=tx.driver||'?';if(!byCo[k]) byCo[k]={name:k,F:0,T:0,A:0,W:0,P:0,L:0,EVcost:0,EVkwh:0,n:0};if(tx.type==='carburant'){byCo[k].F+=tx.amount||0;byCo[k].L+=tx.liters||0;}if(tx.type==='peage') byCo[k].T+=tx.amount||0;if(tx.type==='achat') byCo[k].A+=tx.amount||0;if(tx.type==='lavage') byCo[k].W+=tx.amount||0;if(tx.type==='parking') byCo[k].P+=tx.amount||0;byCo[k].n++;});
+  evAll.forEach(function(e){var k=e.driver||'?';if(!byCo[k]) byCo[k]={name:k,F:0,T:0,A:0,W:0,P:0,L:0,EVcost:0,EVkwh:0,n:0};byCo[k].EVcost+=e.amount||0;byCo[k].EVkwh+=e.kwh||0;byCo[k].n++;});
+  var collabs=Object.values(byCo).map(function(d){return {name:d.name,F:Math.round(d.F),T:Math.round(d.T),A:Math.round(d.A||0),W:Math.round(d.W||0),P:Math.round(d.P||0),L:Math.round(d.L),EVcost:Math.round(d.EVcost||0),EVkwh:Math.round(d.EVkwh||0),n:d.n};}).sort(function(a,b){return (b.F+b.T+b.EVcost)-(a.F+a.T+a.EVcost);});
   // By ws
   var byWs={};
-  filtered.forEach(function(tx){var p=findPlanning(tx),wid=p?p.wsid:'none',wn=wid==='none'?'Non affecte':(STATE.cfg.worksites.find(function(w){return w.id===wid;})||{name:wid}).name;if(!byWs[wid]) byWs[wid]={name:wn,F:0,T:0,A:0,W:0,P:0,L:0};if(tx.type==='carburant'){byWs[wid].F+=tx.amount||0;byWs[wid].L+=tx.liters||0;}if(tx.type==='peage') byWs[wid].T+=tx.amount||0;if(tx.type==='achat') byWs[wid].A+=tx.amount||0;if(tx.type==='lavage') byWs[wid].W+=tx.amount||0;if(tx.type==='parking') byWs[wid].P+=tx.amount||0;});
-  var wsList=Object.values(byWs).map(function(d){return {name:d.name,F:Math.round(d.F),T:Math.round(d.T),A:Math.round(d.A||0),W:Math.round(d.W||0),P:Math.round(d.P||0),L:Math.round(d.L)};}).sort(function(a,b){return (b.F+b.T)-(a.F+a.T);});
+  filtered.forEach(function(tx){var p=findPlanning(tx),wid=p?p.wsid:'none',wn=wid==='none'?'Non affecté':(STATE.cfg.worksites.find(function(w){return w.id===wid;})||{name:wid}).name;if(!byWs[wid]) byWs[wid]={name:wn,F:0,T:0,A:0,W:0,P:0,L:0,EVcost:0,EVkwh:0};if(tx.type==='carburant'){byWs[wid].F+=tx.amount||0;byWs[wid].L+=tx.liters||0;}if(tx.type==='peage') byWs[wid].T+=tx.amount||0;if(tx.type==='achat') byWs[wid].A+=tx.amount||0;if(tx.type==='lavage') byWs[wid].W+=tx.amount||0;if(tx.type==='parking') byWs[wid].P+=tx.amount||0;});
+  evAll.forEach(function(e){var wid=e.wsid||'none',wn=wid==='none'?'Non affecté':(STATE.cfg.worksites.find(function(w){return w.id===wid;})||{name:wid}).name;if(!byWs[wid]) byWs[wid]={name:wn,F:0,T:0,A:0,W:0,P:0,L:0,EVcost:0,EVkwh:0};byWs[wid].EVcost+=e.amount||0;byWs[wid].EVkwh+=e.kwh||0;});
+  var wsList=Object.values(byWs).map(function(d){return {name:d.name,F:Math.round(d.F),T:Math.round(d.T),A:Math.round(d.A||0),W:Math.round(d.W||0),P:Math.round(d.P||0),L:Math.round(d.L),EVcost:Math.round(d.EVcost||0),EVkwh:Math.round(d.EVkwh||0)};}).sort(function(a,b){return (b.F+b.T+b.EVcost)-(a.F+a.T+a.EVcost);});
   // By month
   var byMo={};
-  filtered.forEach(function(tx){var mo=tx.date?tx.date.slice(0,7):null;if(!mo)return;if(!byMo[mo]) byMo[mo]={mo:mo,F:0,T:0,A:0,W:0,P:0,L:0};if(tx.type==='carburant'){byMo[mo].F+=tx.amount||0;byMo[mo].L+=tx.liters||0;}if(tx.type==='peage') byMo[mo].T+=tx.amount||0;if(tx.type==='achat') byMo[mo].A+=tx.amount||0;if(tx.type==='lavage') byMo[mo].W+=tx.amount||0;if(tx.type==='parking') byMo[mo].P+=tx.amount||0;});
-  var moList=Object.values(byMo).sort(function(a,b){return a.mo.localeCompare(b.mo);}).map(function(d){return {mo:d.mo,F:Math.round(d.F),T:Math.round(d.T),A:Math.round(d.A||0),W:Math.round(d.W||0),P:Math.round(d.P||0),L:Math.round(d.L)};});
+  filtered.forEach(function(tx){var mo=tx.date?tx.date.slice(0,7):null;if(!mo)return;if(!byMo[mo]) byMo[mo]={mo:mo,F:0,T:0,A:0,W:0,P:0,L:0,EVcost:0,EVkwh:0};if(tx.type==='carburant'){byMo[mo].F+=tx.amount||0;byMo[mo].L+=tx.liters||0;}if(tx.type==='peage') byMo[mo].T+=tx.amount||0;if(tx.type==='achat') byMo[mo].A+=tx.amount||0;if(tx.type==='lavage') byMo[mo].W+=tx.amount||0;if(tx.type==='parking') byMo[mo].P+=tx.amount||0;});
+  evAll.forEach(function(e){var mo=e.date?e.date.slice(0,7):null;if(!mo)return;if(!byMo[mo]) byMo[mo]={mo:mo,F:0,T:0,A:0,W:0,P:0,L:0,EVcost:0,EVkwh:0};byMo[mo].EVcost+=e.amount||0;byMo[mo].EVkwh+=e.kwh||0;});
+  var moList=Object.values(byMo).sort(function(a,b){return a.mo.localeCompare(b.mo);}).map(function(d){return {mo:d.mo,F:Math.round(d.F),T:Math.round(d.T),A:Math.round(d.A||0),W:Math.round(d.W||0),P:Math.round(d.P||0),L:Math.round(d.L),EVcost:Math.round(d.EVcost||0),EVkwh:Math.round(d.EVkwh||0)};});
   // N vs N-1
   var avYrs=[...new Set(STATE.txns.map(function(t){return t.date?t.date.slice(0,4):null;}).filter(Boolean))].sort().reverse();
   var cYr=avYrs[0]||'2026',pYr=String(parseInt(cYr)-1);
@@ -1105,9 +1236,10 @@ function renderReports(){
   html+='<select onchange="rpSetWs(this.value)"><option value="all">Tous chantiers</option>'+STATE.cfg.worksites.map(function(w){return '<option value="'+w.id+'"'+(rpF.ws===w.id?' selected':'')+'>'+w.name+'</option>';}).join('')+'</select>';
   html+='<button class="btn sm" onclick="rpReset()">Reset</button>';
   html+='</div></div>';
-  html+='<div class="kpis"><div class="kpi acc"><div class="lb">Total</div><div class="vl">'+eur(Math.round(totF+totT+totA+totW+totP))+'</div><div class="sb">'+filtered.length+' tx</div></div>';
+  html+='<div class="kpis"><div class="kpi acc"><div class="lb">Total</div><div class="vl">'+eur(Math.round(totF+totT+totA+totW+totP+totEVcost))+'</div><div class="sb">'+(filtered.length+evAll.length)+' lignes</div></div>';
   html+='<div class="kpi"><div class="lb">&#9981; Carburant</div><div class="vl">'+eur(Math.round(totF))+'</div><div class="sb">'+Math.round(totL)+' L</div></div>';
-  html+='<div class="kpi"><div class="lb">&#128739; Peages</div><div class="vl">'+eur(Math.round(totT))+'</div></div>';
+  html+='<div class="kpi"><div class="lb">&#128739; Péages</div><div class="vl">'+eur(Math.round(totT))+'</div></div>';
+  if(totEVkwh>0||totEVcost>0) html+='<div class="kpi" style="border-top-color:#f39c12"><div class="lb">&#x26A1; Électrique</div><div class="vl" style="color:#f39c12">'+eur(Math.round(totEVcost))+'</div><div class="sb">'+Math.round(totEVkwh)+' kWh</div></div>';
   if(totA>0) html+='<div class="kpi"><div class="lb">&#128717; Achats boutique</div><div class="vl">'+eur(Math.round(totA))+'</div></div>';
   if(totW>0) html+='<div class="kpi"><div class="lb">&#128142; Lavages</div><div class="vl">'+eur(Math.round(totW))+'</div></div>';
   if(totP>0) html+='<div class="kpi"><div class="lb">&#128700; Parkings</div><div class="vl">'+eur(Math.round(totP))+'</div></div>';
@@ -1134,18 +1266,27 @@ function renderReports(){
     });
     html+='</div>';
     html+='<canvas id="rp-chart" height="60" style="margin-bottom:14px"></canvas>';
-    html+='<table><thead><tr><th>Conducteur</th><th class="tr">Carburant</th><th class="tr">Litres</th><th class="tr">Peages</th><th class="tr">Achats</th><th class="tr">Lavages</th><th class="tr">Parkings</th><th class="tr">Total</th><th class="tr">Tx</th></tr></thead><tbody>';
-    collabs.forEach(function(d){html+='<tr><td style="font-weight:600">'+d.name+'</td><td class="tr">'+eur(d.F)+'</td><td class="tr">'+d.L+' L</td><td class="tr">'+eur(d.T)+'</td><td class="tr">'+eur(d.A||0)+'</td><td class="tr">'+eur(d.W||0)+'</td><td class="tr">'+eur(d.P||0)+'</td><td class="tr" style="font-weight:700">'+eur(d.F+d.T+(d.A||0)+(d.W||0)+(d.P||0))+'</td><td class="tr" style="color:#888">'+d.n+'</td></tr>';});
-    html+='</tbody><tfoot><tr><td>TOTAL</td><td class="tr">'+eur(Math.round(totF))+'</td><td class="tr">'+Math.round(totL)+' L</td><td class="tr">'+eur(Math.round(totT))+'</td><td class="tr">'+eur(Math.round(totA))+'</td><td class="tr">'+eur(Math.round(totW))+'</td><td class="tr">'+eur(Math.round(totP))+'</td><td class="tr" style="font-weight:700">'+eur(Math.round(totF+totT+totA+totW+totP))+'</td><td class="tr">'+filtered.length+'</td></tr></tfoot></table>';
+    var hasEVco=collabs.some(function(d){return d.EVkwh>0;});
+    html+='<table><thead><tr><th>Conducteur</th><th class="tr">Carburant</th><th class="tr">Litres</th><th class="tr">Péages</th>';
+    if(hasEVco) html+='<th class="tr" style="color:#f39c12">&#x26A1; kWh</th><th class="tr" style="color:#f39c12">&#x26A1; Coût</th>';
+    html+='<th class="tr">Autres</th><th class="tr">Total</th><th class="tr">N</th></tr></thead><tbody>';
+    collabs.forEach(function(d){var autres=d.A+d.W+d.P;html+='<tr><td style="font-weight:600">'+d.name+'</td><td class="tr">'+eur(d.F)+'</td><td class="tr">'+d.L+' L</td><td class="tr">'+eur(d.T)+'</td>';if(hasEVco){html+='<td class="tr" style="color:#f39c12">'+(d.EVkwh>0?d.EVkwh+' kWh':'—')+'</td><td class="tr" style="color:#f39c12">'+(d.EVcost>0?eur(d.EVcost):'—')+'</td>';}html+='<td class="tr" style="color:#888">'+eur(autres)+'</td><td class="tr" style="font-weight:700">'+eur(d.F+d.T+d.EVcost+autres)+'</td><td class="tr" style="color:#888">'+d.n+'</td></tr>';});
+    html+='</tbody><tfoot><tr><td>TOTAL</td><td class="tr">'+eur(Math.round(totF))+'</td><td class="tr">'+Math.round(totL)+' L</td><td class="tr">'+eur(Math.round(totT))+'</td>';if(hasEVco){html+='<td class="tr" style="font-weight:700;color:#f39c12">'+Math.round(totEVkwh)+' kWh</td><td class="tr" style="font-weight:700;color:#f39c12">'+eur(Math.round(totEVcost))+'</td>';}html+='<td class="tr">'+eur(Math.round(totA+totW+totP))+'</td><td class="tr" style="font-weight:700">'+eur(Math.round(totF+totT+totEVcost+totA+totW+totP))+'</td><td class="tr">'+filtered.length+'</td></tr></tfoot></table>';
   } else if(rpView==='chantier'){
     html+='<canvas id="rp-chart" height="50" style="margin-bottom:14px"></canvas>';
-    html+='<table><thead><tr><th>Chantier</th><th class="tr">Carburant</th><th class="tr">Litres</th><th class="tr">Peages</th><th class="tr">Achats</th><th class="tr">Lavages</th><th class="tr">Parkings</th><th class="tr">Total</th></tr></thead><tbody>';
-    wsList.forEach(function(d){html+='<tr><td style="font-weight:600">'+d.name+'</td><td class="tr">'+eur(d.F)+'</td><td class="tr">'+d.L+' L</td><td class="tr">'+eur(d.T)+'</td><td class="tr">'+eur(d.A||0)+'</td><td class="tr">'+eur(d.W||0)+'</td><td class="tr">'+eur(d.P||0)+'</td><td class="tr" style="font-weight:700">'+eur(d.F+d.T+(d.A||0)+(d.W||0)+(d.P||0))+'</td></tr>';});
+    var hasEVws=wsList.some(function(d){return d.EVkwh>0;});
+    html+='<table><thead><tr><th>Chantier</th><th class="tr">Carburant</th><th class="tr">Litres</th><th class="tr">Péages</th>';
+    if(hasEVws) html+='<th class="tr" style="color:#f39c12">&#x26A1; kWh</th><th class="tr" style="color:#f39c12">&#x26A1; Coût</th>';
+    html+='<th class="tr">Autres</th><th class="tr">Total</th></tr></thead><tbody>';
+    wsList.forEach(function(d){var autres=d.A+d.W+d.P;html+='<tr><td style="font-weight:600">'+d.name+'</td><td class="tr">'+eur(d.F)+'</td><td class="tr">'+d.L+' L</td><td class="tr">'+eur(d.T)+'</td>';if(hasEVws){html+='<td class="tr" style="color:#f39c12">'+(d.EVkwh>0?d.EVkwh+' kWh':'—')+'</td><td class="tr" style="color:#f39c12">'+(d.EVcost>0?eur(d.EVcost):'—')+'</td>';}html+='<td class="tr" style="color:#888">'+eur(autres)+'</td><td class="tr" style="font-weight:700">'+eur(d.F+d.T+d.EVcost+autres)+'</td></tr>';});
     html+='</tbody></table>';
   } else if(rpView==='mois'){
     html+='<canvas id="rp-chart" height="70" style="margin-bottom:14px"></canvas>';
-    html+='<table><thead><tr><th>Mois</th><th class="tr">Carburant</th><th class="tr">Litres</th><th class="tr">Peages</th><th class="tr">Achats</th><th class="tr">Lavages</th><th class="tr">Parkings</th><th class="tr">Total</th></tr></thead><tbody>';
-    moList.forEach(function(d){html+='<tr><td>'+new Date(d.mo+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})+'</td><td class="tr">'+eur(d.F)+'</td><td class="tr">'+d.L+' L</td><td class="tr">'+eur(d.T)+'</td><td class="tr">'+eur(d.A||0)+'</td><td class="tr">'+eur(d.W||0)+'</td><td class="tr">'+eur(d.P||0)+'</td><td class="tr" style="font-weight:700">'+eur(d.F+d.T+(d.A||0)+(d.W||0)+(d.P||0))+'</td></tr>';});
+    var hasEVmo=moList.some(function(d){return d.EVkwh>0;});
+    html+='<table><thead><tr><th>Mois</th><th class="tr">Carburant</th><th class="tr">Litres</th><th class="tr">Péages</th>';
+    if(hasEVmo) html+='<th class="tr" style="color:#f39c12">&#x26A1; kWh</th><th class="tr" style="color:#f39c12">&#x26A1; Coût</th>';
+    html+='<th class="tr">Total</th></tr></thead><tbody>';
+    moList.forEach(function(d){html+='<tr><td>'+new Date(d.mo+'-01').toLocaleDateString('fr-FR',{month:'long',year:'numeric'})+'</td><td class="tr">'+eur(d.F)+'</td><td class="tr">'+d.L+' L</td><td class="tr">'+eur(d.T)+'</td>';if(hasEVmo){html+='<td class="tr" style="color:#f39c12">'+(d.EVkwh>0?d.EVkwh+' kWh':'—')+'</td><td class="tr" style="color:#f39c12">'+(d.EVcost>0?eur(d.EVcost):'—')+'</td>';}html+='<td class="tr" style="font-weight:700">'+eur(d.F+d.T+(d.EVcost||0)+(d.A||0)+(d.W||0)+(d.P||0))+'</td></tr>';});
     html+='</tbody></table>';
   } else if(rpView==='n1'){
     html+='<div class="flex" style="margin-bottom:12px;gap:12px">';
@@ -2067,7 +2208,16 @@ function renderConfig(){
   html+='<div onclick="clickImport()" style="border:2px dashed #ccc;border-radius:12px;padding:2rem;text-align:center;cursor:pointer;background:#fafaf8" ondragover="dz_over(this)" ondragexit="dz_out(this)" ondrop="dz_drop(event)">';
   html+='<div style="font-size:2rem;margin-bottom:8px">&#128202;</div><div style="font-weight:700;margin-bottom:5px">Glissez vos fichiers Excel TotalEnergies ici</div>';
   html+='<div style="color:#888;font-size:13px">ou cliquez pour selectionner (Transactions_*.xlsx)</div></div>';
-  html+='<div style="margin-top:10px;font-size:13px;color:#888">&#x1F697; '+STATE.cfg.vehicles.length+' vehicules &nbsp;|&nbsp; &#x1F3D7; '+STATE.cfg.worksites.length+' chantiers &nbsp;|&nbsp; &#x1F4CB; '+STATE.txns.length+' transactions chargees</div></div>';
+  html+='<div style="margin-top:10px;font-size:13px;color:#888">&#x1F697; '+STATE.cfg.vehicles.length+' véhicules &nbsp;|&nbsp; &#x1F4CB; '+STATE.txns.length+' transactions</div></div>';
+
+  html+='<div class="card">';
+  html+='<div class="flex-between" style="margin-bottom:10px"><h3 style="margin:0">&#x26A1; Importer des recharges VE</h3>';
+  if(IS_ADMIN()) html+='<button class="btn sm" onclick="downloadEVTemplate()">&#128229; Modèle XLS</button>';
+  html+='</div>';
+  html+='<div onclick="clickImportEV()" style="border:2px dashed #f39c12;border-radius:12px;padding:1.5rem;text-align:center;cursor:pointer;background:#fffbf5" ondragover="this.style.borderColor=\'#e67e22\'" ondragexit="this.style.borderColor=\'#f39c12\'" ondrop="dz_ev_drop(event)">';
+  html+='<div style="font-size:2rem;margin-bottom:8px">&#x26A1;</div><div style="font-weight:700;margin-bottom:5px">Glissez une facture de recharge VE ici</div>';
+  html+='<div style="color:#888;font-size:13px">Excel (.xlsx / .csv) ou PDF de votre opérateur</div></div>';
+  html+='<div style="margin-top:10px;font-size:13px;color:#888">&#x26A1; <strong>'+(STATE.evCharges||[]).length+'</strong> recharge(s) enregistrée(s) &nbsp;|&nbsp; &#x1F50B; '+(STATE.cfg.vehicles.filter(function(v){return v.electric||v.fuelType==='electrique';}).length)+' véhicule(s) électrique(s)</div></div>';
     // ── CHANTIERS ──
   html+='<div class="card"><h3>&#127959; Chantiers</h3>';
   html+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:10px">';
